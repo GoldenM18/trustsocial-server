@@ -1,10 +1,13 @@
 import { Transform } from 'class-transformer';
-import { IsNotEmpty, IsString, MaxLength } from 'class-validator';
+import { IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
 
 export class CreateMessageDto {
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : ''))
   @IsString()
-  @IsNotEmpty()
   @MaxLength(5000)
   content: string;
+
+  @IsOptional()
+  @IsUUID()
+  replyToMessageId?: string;
 }

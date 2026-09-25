@@ -12,7 +12,8 @@ import {
 import { isUUID } from 'class-validator';
 import { Server, Socket } from 'socket.io';
 
-import { MessagingService } from './messaging.service';
+import { ALLOWED_MESSAGE_REACTIONS } from './dto/set-reaction.dto';
+import { MessagingService, summarizeMessageReactions, type MessageReactionChange } from './messaging.service';
 
 const MESSAGE_MAX_LENGTH = 5000;
 
@@ -27,6 +28,22 @@ type JoinConversationPayload = {
 type SendMessagePayload = {
   conversationId?: unknown;
   content?: unknown;
+  replyToMessageId?: unknown;
+};
+
+type EditMessagePayload = {
+  messageId?: unknown;
+  content?: unknown;
+};
+
+type ReactionPayload = {
+  messageId?: unknown;
+  reaction?: unknown;
+};
+
+type DeleteMessagePayload = {
+  conversationId?: unknown;
+  messageId?: unknown;
 };
 
 @WebSocketGateway({
@@ -115,22 +132,189 @@ export class MessagingGateway implements OnGatewayInit, OnGatewayConnection, OnG
   async sendMessage(client: Socket, payload: SendMessagePayload) {
     const userId = this.authenticatedUserId(client);
     const conversationId = this.conversationId(payload?.conversationId);
+    const content = this.optionalMessageContent(payload?.content);
+    const replyToMessageId = this.optionalMessageId(payload?.replyToMessageId);
+
+    try {
+      const message = await this.messagingService.sendMessage(
+        userId,
+        conversationId,
+        content,
+        replyToMessageId,
+      );
+      await this.broadcastNewMessage(message);
+      return message;
+    } catch (error) {
+      throw this.toSocketError(error, 'Unable to send message');
+    }
+  }
+
+  @SubscribeMessage('edit_message')
+  async editMessage(client: Socket, payload: EditMessagePayload) {
+    const userId = this.authenticatedUserId(client);
+    const messageId = this.messageId(payload?.messageId);
     const content = this.messageContent(payload?.content);
 
     try {
-      const message = await this.messagingService.sendMessage(userId, conversationId, content);
-      const payloadToEmit = {
-        id: message.id,
-        conversationId: message.conversationId,
-        senderId: message.senderId,
-        content: message.content,
-        createdAt: message.createdAt,
-      };
-
-      this.server.to(conversationId).emit('new_message', payloadToEmit);
-      return payloadToEmit;
+      const message = await this.messagingService.editMessage(userId, messageId, content);
+      this.notifyMessageEdited(message);
+      return message;
     } catch (error) {
-      throw this.toSocketError(error, 'Unable to send message');
+      throw this.toSocketError(error, 'Unable to edit message');
+    }
+  }
+
+  @SubscribeMessage('add_reaction')
+  async addReaction(client: Socket, payload: ReactionPayload) {
+    const userId = this.authenticatedUserId(client);
+    const messageId = this.messageId(payload?.messageId);
+    const reaction = this.reactionValue(payload?.reaction);
+
+    try {
+      const change = await this.messagingService.setMessageReaction(userId, messageId, reaction);
+      await this.notifyMessageReactionsUpdated(change, client.id);
+      return change.summary;
+    } catch (error) {
+      throw this.toSocketError(error, 'Unable to add reaction');
+    }
+  }
+
+  @SubscribeMessage('remove_reaction')
+  async removeReaction(client: Socket, payload: ReactionPayload) {
+    const userId = this.authenticatedUserId(client);
+    const messageId = this.messageId(payload?.messageId);
+
+    try {
+      const change = await this.messagingService.removeMessageReaction(userId, messageId);
+      await this.notifyMessageReactionsUpdated(change, client.id);
+      return change.summary;
+    } catch (error) {
+      throw this.toSocketError(error, 'Unable to remove reaction');
+    }
+  }
+
+  @SubscribeMessage('delete_message_for_everyone')
+  async deleteMessageForEveryone(client: Socket, payload: DeleteMessagePayload) {
+    const userId = this.authenticatedUserId(client);
+    const conversationId = this.conversationId(payload?.conversationId);
+    const messageId = this.messageId(payload?.messageId);
+
+    try {
+      const message = await this.messagingService.deleteMessageForEveryone(
+        userId,
+        conversationId,
+        messageId,
+      );
+      this.notifyMessageDeletedForEveryone(message);
+      return message;
+    } catch (error) {
+      throw this.toSocketError(error, 'Unable to delete message');
+    }
+  }
+
+  @SubscribeMessage('delete_message_for_me')
+  async deleteMessageForMe(client: Socket, payload: DeleteMessagePayload) {
+    const userId = this.authenticatedUserId(client);
+    const conversationId = this.conversationId(payload?.conversationId);
+    const messageId = this.messageId(payload?.messageId);
+
+    try {
+      return await this.messagingService.deleteMessageForMe(userId, conversationId, messageId);
+    } catch (error) {
+      throw this.toSocketError(error, 'Unable to delete message');
+    }
+  }
+
+  notifyMessageDeletedForEveryone(message: {
+    id: string;
+    conversationId: string;
+    senderId: string;
+    content: string;
+    createdAt: Date;
+    deliveredAt: Date | null;
+    readAt: Date | null;
+    editedAt: Date | null;
+    deletedForEveryone: boolean;
+  }) {
+    this.server.to(message.conversationId).emit('message_deleted_for_everyone', message);
+  }
+
+  private async broadcastNewMessage(message: {
+    id: string;
+    conversationId: string;
+    senderId: string;
+    replyTo: unknown;
+  }) {
+    if (!message.replyTo) {
+      this.server.to(message.conversationId).emit('new_message', message);
+      return;
+    }
+
+    const sockets = await this.server.in(message.conversationId).fetchSockets();
+
+    await Promise.all(
+      sockets.map(async (socket) => {
+        const viewerId = socket.data.userId;
+
+        if (typeof viewerId !== 'string' || viewerId.length === 0) {
+          return;
+        }
+
+        if (viewerId.toLowerCase() === message.senderId.toLowerCase()) {
+          socket.emit('new_message', message);
+          return;
+        }
+
+        try {
+          const payload = await this.messagingService.visibleMessageForViewer(message.id, viewerId);
+          socket.emit('new_message', payload);
+        } catch {
+          return;
+        }
+      }),
+    );
+  }
+
+  notifyMessageAttachmentAdded(message: {
+    id: string;
+    conversationId: string;
+    attachments: unknown[];
+  }) {
+    this.server.to(message.conversationId).emit('message_attachment_added', message);
+  }
+
+  notifyMessageEdited(message: {
+    id: string;
+    conversationId: string;
+    senderId: string;
+    content: string;
+    createdAt: Date;
+    deliveredAt: Date | null;
+    readAt: Date | null;
+    editedAt: Date | null;
+    deletedForEveryone: boolean;
+  }) {
+    this.server.to(message.conversationId).emit('message_edited', message);
+  }
+
+  async notifyMessageReactionsUpdated(change: MessageReactionChange, exceptSocketId?: string) {
+    const sockets = await this.server.in(change.conversationId).fetchSockets();
+
+    for (const socket of sockets) {
+      if (exceptSocketId && socket.id === exceptSocketId) {
+        continue;
+      }
+
+      const userId = socket.data.userId;
+
+      if (typeof userId !== 'string' || userId.length === 0) {
+        continue;
+      }
+
+      socket.emit(
+        'message_reactions_updated',
+        summarizeMessageReactions(change.messageId, change.entries, userId),
+      );
     }
   }
 
@@ -159,6 +343,34 @@ export class MessagingGateway implements OnGatewayInit, OnGatewayConnection, OnG
     }
 
     client.to(conversationId).emit(event, { userId });
+  }
+
+  @SubscribeMessage('mark_as_delivered')
+  async markAsDelivered(client: Socket, payload: JoinConversationPayload) {
+    const userId = this.authenticatedUserId(client);
+    const conversationId = this.conversationId(payload?.conversationId);
+
+    let messageIds: string[];
+
+    try {
+      const result = await this.messagingService.markConversationAsDelivered(
+        conversationId,
+        userId,
+      );
+      messageIds = result.messageIds;
+    } catch (error) {
+      throw this.toSocketError(error, 'Unable to mark messages as delivered');
+    }
+
+    if (messageIds.length === 0) {
+      return;
+    }
+
+    client.to(conversationId).emit('messages_delivered', {
+      conversationId,
+      messageIds,
+      deliveredBy: userId,
+    });
   }
 
   @SubscribeMessage('mark_as_read')
@@ -217,6 +429,52 @@ export class MessagingGateway implements OnGatewayInit, OnGatewayConnection, OnG
     }
 
     return value;
+  }
+
+  private messageId(value: unknown): string {
+    if (typeof value !== 'string' || !isUUID(value)) {
+      throw new WsException('Invalid message id');
+    }
+
+    return value;
+  }
+
+  private optionalMessageId(value: unknown): string | null {
+    if (value === undefined || value === null || value === '') {
+      return null;
+    }
+
+    if (typeof value !== 'string' || !isUUID(value)) {
+      throw new WsException('Invalid message id');
+    }
+
+    return value;
+  }
+
+  private reactionValue(value: unknown): string {
+    if (typeof value !== 'string' || !ALLOWED_MESSAGE_REACTIONS.some((reaction) => reaction === value)) {
+      throw new WsException('Reaction is not supported');
+    }
+
+    return value;
+  }
+
+  private optionalMessageContent(value: unknown): string {
+    if (value === undefined || value === null) {
+      return '';
+    }
+
+    if (typeof value !== 'string') {
+      throw new WsException('Message content is required');
+    }
+
+    const content = value.trim();
+
+    if (content.length > MESSAGE_MAX_LENGTH) {
+      throw new WsException('Message content must be at most 5000 characters');
+    }
+
+    return content;
   }
 
   private messageContent(value: unknown): string {

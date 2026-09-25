@@ -15,6 +15,7 @@ import { Conversation } from './conversation.entity';
 @Entity('messages')
 @Index('IDX_messages_conversationId_createdAt', ['conversationId', 'createdAt', 'id'])
 @Index('IDX_messages_senderId', ['senderId'])
+@Index('IDX_messages_replyToMessageId', ['replyToMessageId'])
 export class Message {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -37,7 +38,23 @@ export class Message {
   content: string;
 
   @Column({ type: 'timestamp', nullable: true })
+  deliveredAt: Date | null;
+
+  @Column({ type: 'timestamp', nullable: true })
   readAt: Date | null;
+
+  @Column({ type: 'timestamp', nullable: true })
+  editedAt: Date | null;
+
+  @Column({ type: 'timestamp', nullable: true })
+  deletedForEveryoneAt: Date | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  replyToMessageId: string | null;
+
+  @ManyToOne(() => Message, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'replyToMessageId' })
+  replyToMessage?: Message | null;
 
   @CreateDateColumn()
   createdAt: Date;
