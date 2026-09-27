@@ -8,6 +8,7 @@ import { MessageReaction } from '../messaging/entities/message-reaction.entity';
 import { MessageUserDeletion } from '../messaging/entities/message-user-deletion.entity';
 import { Message } from '../messaging/entities/message.entity';
 import { User } from '../users/entities/user.entity';
+import { Post } from '../posts/entities/post.entity';
 export default new DataSource({
   type: 'postgres',
   host: process.env.DB_HOST,
@@ -15,6 +16,6 @@ export default new DataSource({
   username: process.env.DB_USERNAME,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_DATABASE,
-  entities: [User, Connection, Conversation, ConversationParticipant, Message, MessageUserDeletion, MessageReaction, MessageAttachment],
+  entities: [User, Connection, Conversation, ConversationParticipant, Message, MessageUserDeletion, MessageReaction, MessageAttachment, Post],
   migrations: ['dist/database/migrations/*.js'],
 });

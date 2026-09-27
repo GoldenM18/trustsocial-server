@@ -4,6 +4,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { Connection } from '../connections/entities/connection.entity';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { UsersModule } from '../users/users.module';
 import { ConversationParticipant } from './entities/conversation-participant.entity';
 import { Conversation } from './entities/conversation.entity';
@@ -12,6 +13,7 @@ import { MessageReaction } from './entities/message-reaction.entity';
 import { MessageUserDeletion } from './entities/message-user-deletion.entity';
 import { Message } from './entities/message.entity';
 import { MessageAttachmentsController } from './message-attachments.controller';
+import { CallSignalingService } from './call-signaling.service';
 import { MessagingController } from './messaging.controller';
 import { MessagesController } from './messages.controller';
 import { MessagingGateway } from './messaging.gateway';
@@ -31,6 +33,7 @@ import { MessageAttachmentStorage } from './storage/message-attachment-storage';
       MessageAttachment,
     ]),
     UsersModule,
+    NotificationsModule,
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
@@ -41,6 +44,7 @@ import { MessageAttachmentStorage } from './storage/message-attachment-storage';
   controllers: [MessagingController, MessagesController, MessageAttachmentsController],
   providers: [
     MessagingService,
+    CallSignalingService,
     MessagingGateway,
     {
       provide: MessageAttachmentStorage,

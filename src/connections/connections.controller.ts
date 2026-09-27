@@ -42,6 +42,14 @@ export class ConnectionsController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Get('suggestions')
+  listSuggestions(@Req() request: AuthenticatedRequest) {
+    return this.connectionsService.listSuggestions(
+      request.user.userId,
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Get()
   list(@Req() request: AuthenticatedRequest) {
     return this.connectionsService.listAccepted(request.user.userId);

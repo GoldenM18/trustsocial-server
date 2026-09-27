@@ -21,6 +21,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CreateConversationDto } from './dto/create-conversation.dto';
 import { CreateMessageDto } from './dto/create-message.dto';
 import { ListMessagesDto } from './dto/list-messages.dto';
+import { SearchMessagesDto } from './dto/search-messages.dto';
 import { MessagingGateway } from './messaging.gateway';
 import { MessagingService } from './messaging.service';
 import { MessageAttachmentUploadFilter } from './storage/message-attachment-upload.filter';
@@ -127,6 +128,16 @@ export class MessagingController {
       conversationId,
       messageId,
     );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get(':conversationId/messages/search')
+  searchMessages(
+    @Req() request: AuthenticatedRequest,
+    @Param('conversationId', ParseUUIDPipe) conversationId: string,
+    @Query() query: SearchMessagesDto,
+  ) {
+    return this.messagingService.searchMessages(request.user.userId, conversationId, query);
   }
 
   @UseGuards(JwtAuthGuard)

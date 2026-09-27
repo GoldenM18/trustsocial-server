@@ -5,6 +5,9 @@ import { UsersModule } from './users/users.module';
 import { AuthModule } from './auth/auth.module';
 import { ConnectionsModule } from './connections/connections.module';
 import { MessagingModule } from './messaging/messaging.module';
+import { NotificationsModule } from './notifications/notifications.module';
+import { PostsModule } from './posts/posts.module';
+import { StorageModule } from './storage/storage.module';
 
 @Module({
   imports: [
@@ -27,6 +30,9 @@ import { MessagingModule } from './messaging/messaging.module';
     AuthModule,
     ConnectionsModule,
     MessagingModule,
+    NotificationsModule,
+    PostsModule,
+    StorageModule,
   ],
 })
 export class AppModule {}

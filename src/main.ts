@@ -13,6 +13,10 @@ async function bootstrap() {
     prefix: '/uploads/profile-photos/',
   });
 
+  app.useStaticAssets(join(process.cwd(), 'uploads', 'post-images'), {
+    prefix: '/uploads/post-images/',
+  });
+
   app.enableCors({
     origin: true,
   });

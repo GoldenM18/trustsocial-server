@@ -11,6 +11,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In, QueryFailedError, Repository } from 'typeorm';
 
 import { Connection, ConnectionStatus } from '../connections/entities/connection.entity';
+import { NotificationsService } from '../notifications/notifications.service';
 import { User } from '../users/entities/user.entity';
 import { ALLOWED_MESSAGE_REACTIONS } from './dto/set-reaction.dto';
 import { ConversationParticipant } from './entities/conversation-participant.entity';
@@ -20,6 +21,7 @@ import { MessageReaction } from './entities/message-reaction.entity';
 import { MessageUserDeletion } from './entities/message-user-deletion.entity';
 import { Message } from './entities/message.entity';
 import { ListMessagesDto } from './dto/list-messages.dto';
+import { SearchMessagesDto } from './dto/search-messages.dto';
 import {
   detectImageMime,
   extensionForMessageImage,
@@ -80,6 +82,10 @@ type VisibleMessage = {
   conversationId: string;
   senderId: string;
   content: string;
+  messageType: 'text' | 'call';
+  callId: string | null;
+  callStatus: 'completed' | 'rejected' | 'missed' | null;
+  callDurationSeconds: number | null;
   createdAt: Date;
   deliveredAt: Date | null;
   readAt: Date | null;
@@ -141,6 +147,7 @@ export class MessagingService {
     @InjectRepository(Connection)
     private readonly connectionsRepository: Repository<Connection>,
     private readonly messageAttachmentStorage: MessageAttachmentStorage,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   async list(userId: string): Promise<{ conversations: ConversationListItem[] }> {
@@ -406,10 +413,24 @@ export class MessagingService {
 
       await manager.update(Conversation, { id: conversationId }, { updatedAt: new Date() });
 
-      return message;
+      const recipientId = isSameUser(conversation.participantLowId, currentUserId)
+        ? conversation.participantHighId
+        : conversation.participantLowId;
+
+      return { message, recipientId };
     });
 
-    return this.presentMessage(saved, currentUserId);
+    await this.notificationsService.createNotification({
+      recipientId: saved.recipientId,
+      type: 'new_message',
+      title: 'New message',
+      message: 'You received a new message.',
+      relatedUserId: saved.message.senderId,
+      relatedConversationId: saved.message.conversationId,
+      relatedMessageId: saved.message.id,
+    });
+
+    return this.presentMessage(saved.message, currentUserId);
   }
 
   async deleteMessageForEveryone(
@@ -707,6 +728,51 @@ export class MessagingService {
         reactions: reactionsByMessageId.get(message.id) ?? [],
         replyTo: repliesByMessageId.get(message.id) ?? null,
         attachments: message.deletedForEveryoneAt ? [] : attachmentsByMessageId.get(message.id) ?? [],
+      })),
+      page,
+      limit,
+      total,
+      totalPages: total === 0 ? 0 : Math.ceil(total / limit),
+    };
+  }
+
+  async searchMessages(currentUserId: string, conversationId: string, query: SearchMessagesDto) {
+    await this.assertConversationAccess(currentUserId, conversationId);
+
+    const page = query.page ?? 1;
+    const limit = Math.min(query.limit ?? 20, 50);
+    const term = query.q.trim();
+
+    if (term.length === 0) {
+      throw new BadRequestException('Search query is required');
+    }
+
+    const [messages, total] = await this.messagesRepository
+      .createQueryBuilder('message')
+      .where('message.conversationId = :conversationId', { conversationId })
+      .andWhere('message.deletedForEveryoneAt IS NULL')
+      .andWhere(messageHiddenForUserSql('message'), { userId: currentUserId })
+      .andWhere("btrim(message.content) <> ''")
+      .andWhere('strpos(lower(message.content), lower(:term)) > 0', { term })
+      .orderBy('message.createdAt', 'DESC')
+      .addOrderBy('message.id', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getManyAndCount();
+
+    const reactionsByMessageId = await this.reactionsForMessages(
+      messages.map((message) => message.id),
+      currentUserId,
+    );
+    const repliesByMessageId = await this.replyPreviewsByMessageId(messages, currentUserId);
+    const attachmentsByMessageId = await this.attachmentsByMessageId(messages.map((message) => message.id));
+
+    return {
+      items: messages.map((message) => ({
+        ...toVisibleMessage(message),
+        reactions: reactionsByMessageId.get(message.id) ?? [],
+        replyTo: repliesByMessageId.get(message.id) ?? null,
+        attachments: attachmentsByMessageId.get(message.id) ?? [],
       })),
       page,
       limit,
@@ -1124,6 +1190,10 @@ function toVisibleMessage(message: Message): VisibleMessage {
     conversationId: message.conversationId,
     senderId: message.senderId,
     content: deletedForEveryone ? DELETED_MESSAGE_CONTENT : message.content,
+    messageType: message.messageType,
+    callId: message.callId ?? null,
+    callStatus: message.callStatus ?? null,
+    callDurationSeconds: message.callDurationSeconds ?? null,
     createdAt: message.createdAt,
     deliveredAt: message.deliveredAt ?? null,
     readAt: message.readAt ?? null,
